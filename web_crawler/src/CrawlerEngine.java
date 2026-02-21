@@ -1,4 +1,5 @@
 import java.io.IOException;
+import java.net.URL;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
@@ -21,7 +22,9 @@ public class CrawlerEngine{
 	private static BlockingQueue<String> frontier = new LinkedBlockingQueue<>();
 
 	public CrawlerEngine(String seed) {
-		frontier.add(seed);
+		String seedUrl = canonicalize(seed);
+		if(seedUrl!=null)
+			frontier.add(seedUrl);
 	}
 
 	// @Override
@@ -72,9 +75,9 @@ public class CrawlerEngine{
             if (doc == null) continue;
 
             for (Element link : doc.select("a[href]")) {
-                String next_link = link.absUrl("href");
+                String next_link = canonicalize(link.absUrl("href"));
 
-                if (next_link != null && !next_link.isEmpty()&& !visited.contains(next_link)) {
+                if (next_link != null && !next_link.isEmpty()) {
                     frontier.offer(next_link);
                 }
             }
@@ -103,6 +106,28 @@ public class CrawlerEngine{
 			return null;
 		}
 		
+	}
+
+	private String canonicalize(String link){
+		try {
+			if(link == null || link.isEmpty()) return null;
+
+			URL url = new URL(link);
+			String protocol = url.getProtocol();
+			if(!protocol.equals("https") && !protocol.equals("http")) 
+				return null;
+
+			String host = url.getHost().toLowerCase();
+			String path = url.getPath();
+			
+			if(path==null || path.isEmpty())
+				path = "/";
+			return protocol + "://" + host + path;
+
+		} catch (Exception e) {
+			System.err.println("error in canonicalization method");
+			return null;
+		}
 	}
 	
 }
