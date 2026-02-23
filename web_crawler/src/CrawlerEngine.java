@@ -15,11 +15,17 @@ import org.jsoup.nodes.Element;
 
 public class CrawlerEngine{
 
-	private static final int MAX_THREAD =4;
+	private static final int MAX_THREAD =20;
+	private static final long HOST_DELAY = 1000;
+	private static final int MAX_PAGES = 100;
 
 	private static ExecutorService executor = Executors.newFixedThreadPool(MAX_THREAD);
 	private static Set<String> visited = ConcurrentHashMap.newKeySet();
 	private static BlockingQueue<String> frontier = new LinkedBlockingQueue<>();
+
+	private static ConcurrentHashMap<String, Long> hostLastAccess = new ConcurrentHashMap<>();
+	private static ConcurrentHashMap<String, Integer> hostPageCount= new ConcurrentHashMap<>();
+	private static ConcurrentHashMap<String, Object> hostLocks = new ConcurrentHashMap<>();
 
 	public CrawlerEngine(String seed) {
 		String seedUrl = canonicalize(seed);
@@ -27,24 +33,7 @@ public class CrawlerEngine{
 			frontier.add(seedUrl);
 	}
 
-	// @Override
-	// public void run() {
-	// 	while(true){
-	// 		try {
-	// 			URLNode node = frontier.poll(5, TimeUnit.SECONDS);
-	// 			if(node == null) return;
-
-	// 			crawl(url,depth);
-
-	// 		} catch (Exception e) {
-	// 			// TODO: handle exception
-	// 			return;
-	// 		}
-	// 	}
-	// }
-
 	public void start(){
-		
 		for(int i=0;i<MAX_THREAD;i++)
 			executor.execute(()->{
 		try {
@@ -71,8 +60,21 @@ public class CrawlerEngine{
             if(url == null) return;
             if(!visited.add(url)) continue;
 
+			String host = getHost(url);
+			if(host == null) continue;
+
+			//crawl only if page limit has not been reached yet
+			if(!canCrawl(host)) continue;
+
+			if (!acquireHost(host)) {
+				frontier.offer(url); //put it back safely
+				continue;
+			}
+
             Document doc = request(url);
             if (doc == null) continue;
+
+			incrementHostCount(host);
 
             for (Element link : doc.select("a[href]")) {
                 String next_link = canonicalize(link.absUrl("href"));
@@ -81,7 +83,6 @@ public class CrawlerEngine{
                     frontier.offer(next_link);
                 }
             }
-
         } catch (InterruptedException e) {
             return;
         } catch (Exception e) {
@@ -130,4 +131,43 @@ public class CrawlerEngine{
 		}
 	}
 	
+	private String getHost(String url){
+		try {
+			return new URL(url).getHost().toLowerCase();
+		} catch (Exception e) {
+			System.err.println("error in fetching host");
+			return null;
+		}
+	}
+
+	private boolean acquireHost(String host) {
+    Object lock = hostLocks.computeIfAbsent(host, h -> new Object());
+
+    synchronized (lock) {
+        long now = System.currentTimeMillis();
+        long lastAccess = hostLastAccess.getOrDefault(host, 0L);
+
+        long waitTime = HOST_DELAY - (now - lastAccess);
+
+        if (waitTime > 0) {
+            try {
+                Thread.sleep(waitTime);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+
+        hostLastAccess.put(host, System.currentTimeMillis());
+        return true;
+    }
+}
+
+	private boolean canCrawl(String host){
+		return hostPageCount.getOrDefault(host, 0) < MAX_PAGES;
+	}
+
+	private void incrementHostCount(String host){
+		hostPageCount.merge(host,1,Integer::sum);
+	}
 }
