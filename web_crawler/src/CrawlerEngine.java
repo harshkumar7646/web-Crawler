@@ -15,85 +15,129 @@ import org.jsoup.nodes.Element;
 
 public class CrawlerEngine{
 
-	private static final int MAX_THREAD =20;
-	private static final long HOST_DELAY = 1000;
-	private static final int MAX_PAGES = 100;
+	private  final int MAX_THREAD =20;
+	private  final long HOST_DELAY = 1000;
+	private  final int MAX_PAGES = 100;
 
-	private static ExecutorService executor = Executors.newFixedThreadPool(MAX_THREAD);
-	private static Set<String> visited = ConcurrentHashMap.newKeySet();
-	private static BlockingQueue<String> frontier = new LinkedBlockingQueue<>();
+	private  ExecutorService executor = Executors.newFixedThreadPool(MAX_THREAD);
+	private  Set<String> visited = ConcurrentHashMap.newKeySet();
 
-	private static ConcurrentHashMap<String, Long> hostLastAccess = new ConcurrentHashMap<>();
-	private static ConcurrentHashMap<String, Integer> hostPageCount= new ConcurrentHashMap<>();
-	private static ConcurrentHashMap<String, Object> hostLocks = new ConcurrentHashMap<>();
+	private  ConcurrentHashMap<String,BlockingQueue<String>> hostQueue = new ConcurrentHashMap<>();
+	private  Set<String> activeHosts = ConcurrentHashMap.newKeySet();
+
+	private  ConcurrentHashMap<String, Long> hostLastAccess = new ConcurrentHashMap<>();
+	private  ConcurrentHashMap<String, Integer> hostPageCount= new ConcurrentHashMap<>();
 
 	public CrawlerEngine(String seed) {
-		String seedUrl = canonicalize(seed);
-		if(seedUrl!=null)
-			frontier.add(seedUrl);
+		addURL(seed);
 	}
 
-	public void start(){
-		for(int i=0;i<MAX_THREAD;i++)
-			executor.execute(()->{
-		try {
-			crawl();
-		} catch (Exception e) {
-			Thread.currentThread().interrupt();
-		}});
-
+	public void start() {
+		startDispatcher();
+	
+		while (!isCrawlComplete()) {
+			try {
+				Thread.sleep(500);
+			} catch (InterruptedException e) {
+				break;
+			}
+		}
+	
 		executor.shutdown();
-
 		try {
-			executor.awaitTermination(10, TimeUnit.MINUTES);
+			executor.awaitTermination(1, TimeUnit.MINUTES);
 		} catch (InterruptedException e) {
 			e.printStackTrace();
 		}
 	}
 	
-	private void crawl() {
+	private boolean isCrawlComplete() {
+		if (!activeHosts.isEmpty()) return false;
+	
+		for (BlockingQueue<String> queue : hostQueue.values()) {
+			if (!queue.isEmpty()) return false;
+		}
+	
+		return true;
+	}
+	
+	private void startDispatcher() {
+	Thread dispatcher = new Thread(()->{
+		while (true) { 
+			boolean dispatched = false;
 
-    while (true) {
-        try {
-            String url = frontier.poll(5, TimeUnit.SECONDS);
+			for(String host : hostQueue.keySet()){
+				if(activeHosts.contains(host)) continue;
 
-            if(url == null) return;
-            if(!visited.add(url)) continue;
+				long currentTime = System.currentTimeMillis();
+				long lastAccess = hostLastAccess.getOrDefault(host, 0L);
+				
+				if(currentTime - lastAccess < HOST_DELAY) continue;
 
-			String host = getHost(url);
-			if(host == null) continue;
+				if(!canCrawl(host)) continue;
 
-			//crawl only if page limit has not been reached yet
-			if(!canCrawl(host)) continue;
+				BlockingQueue<String> queue = hostQueue.get(host);
+				
+				if(queue == null || queue.isEmpty()) continue;
 
-			if (!acquireHost(host)) {
-				frontier.offer(url); //put it back safely
-				continue;
+				String url = queue.poll();
+				if(url == null) continue;
+
+				if(!visited.add(url)) continue;
+
+				activeHosts.add(host);
+				hostLastAccess.put(host, System.currentTimeMillis());
+				executor.execute(()-> processUrl(host, url));
+				dispatched = true;
 			}
-
-            Document doc = request(url);
-            if (doc == null) continue;
+			if(!dispatched){
+				try {
+					Thread.sleep(50);
+				} catch (Exception e) {
+					return;
+				}
+			}
+		}
+	});
+	dispatcher.setDaemon(true);
+	dispatcher.start();
+}
+	
+	private void processUrl(String host, String url){
+		try {
+			Document doc = request(url);
+			if(doc == null) return;
 
 			incrementHostCount(host);
 
-            for (Element link : doc.select("a[href]")) {
-                String next_link = canonicalize(link.absUrl("href"));
+			for(Element link : doc.select("a[href]")){
+				addURL(link.absUrl("href"));
+			}
 
-                if (next_link != null && !next_link.isEmpty()) {
-                    frontier.offer(next_link);
-                }
-            }
-        } catch (InterruptedException e) {
-            return;
-        } catch (Exception e) {
-            // ignore and continue
-        }
-    }
-}
+		} catch (Exception e) {
+		}
+		finally{
+			activeHosts.remove(host);
+		}
+	}
 	
+	private void addURL(String seed){
+		String url = canonicalize(seed);
+
+		if(url == null) return ;
+
+
+		String host = getHost(url);
+		if(host == null) return;
+
+		if(!canCrawl(host)) return;
+
+		hostQueue.computeIfAbsent(host, h -> new LinkedBlockingQueue<>()).offer(url);
+	}
+
 	private Document request(String url) {
 		try {
-			Connection con = Jsoup.connect(url).timeout(5000);
+			Connection con = Jsoup.connect(url).timeout(5000).ignoreHttpErrors(true);
 			Document doc = con.get();
 			
 			if(con.response().statusCode()==200) {
@@ -106,7 +150,6 @@ public class CrawlerEngine{
 			System.err.println("error in request method");
 			return null;
 		}
-		
 	}
 
 	private String canonicalize(String link){
@@ -139,29 +182,6 @@ public class CrawlerEngine{
 			return null;
 		}
 	}
-
-	private boolean acquireHost(String host) {
-    Object lock = hostLocks.computeIfAbsent(host, h -> new Object());
-
-    synchronized (lock) {
-        long now = System.currentTimeMillis();
-        long lastAccess = hostLastAccess.getOrDefault(host, 0L);
-
-        long waitTime = HOST_DELAY - (now - lastAccess);
-
-        if (waitTime > 0) {
-            try {
-                Thread.sleep(waitTime);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return false;
-            }
-        }
-
-        hostLastAccess.put(host, System.currentTimeMillis());
-        return true;
-    }
-}
 
 	private boolean canCrawl(String host){
 		return hostPageCount.getOrDefault(host, 0) < MAX_PAGES;
