@@ -1,13 +1,16 @@
 public class Main {
+    public static void main(String[] args) throws InterruptedException {
 
-    public static void main(String[] args) {
+        Thread t1 = new Thread(() -> new CrawlerEngine("https://en.wikipedia.org/wiki/Search_engine").start());
+        Thread t2 = new Thread(() -> new CrawlerEngine("https://github.com/").start());
+        Thread t3 = new Thread(() -> new CrawlerEngine("https://www.reddit.com/").start());
 
-        CrawlerEngine crawler1 =new CrawlerEngine("https://en.wikipedia.org/wiki/Search_engine");
-        CrawlerEngine crawler2 =new CrawlerEngine("https://github.com/");
-        CrawlerEngine crawler3 =new CrawlerEngine("https://www.reddit.com/");
+        t1.start();
+        t2.start();
+        t3.start();
 
-        crawler1.start();
-        crawler2.start();
-        crawler3.start();
+        t1.join();
+        t2.join();
+        t3.join();
     }
 }
