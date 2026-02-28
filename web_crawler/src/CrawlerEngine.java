@@ -29,6 +29,8 @@ public class CrawlerEngine{
 	private  ConcurrentHashMap<String, Long> hostLastAccess = new ConcurrentHashMap<>();
 	private  ConcurrentHashMap<String, Integer> hostPageCount= new ConcurrentHashMap<>();
 
+	private final RobotsParser robotsParser = new RobotsParser();
+
 	public CrawlerEngine(List<String> seedList) {
 		for(String seed: seedList)
 		addURL(seed);
@@ -134,7 +136,18 @@ public class CrawlerEngine{
 
 		if(!canCrawl(host)) return;
 
+		String path = getPath(url);
+		if(!robotsParser.isAllowed(host, path)) return;
+
 		hostQueue.computeIfAbsent(host, h -> new LinkedBlockingQueue<>()).offer(url);
+	}
+
+	private String getPath(String url) {
+		try {
+			return new URL(url).getPath();
+		} catch (Exception e) {
+			return "/";
+		}
 	}
 
 	private Document request(String url) {
