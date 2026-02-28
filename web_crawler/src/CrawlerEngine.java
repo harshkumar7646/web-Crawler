@@ -1,5 +1,6 @@
 import java.io.IOException;
 import java.net.URL;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
@@ -28,7 +29,8 @@ public class CrawlerEngine{
 	private  ConcurrentHashMap<String, Long> hostLastAccess = new ConcurrentHashMap<>();
 	private  ConcurrentHashMap<String, Integer> hostPageCount= new ConcurrentHashMap<>();
 
-	public CrawlerEngine(String seed) {
+	public CrawlerEngine(List<String> seedList) {
+		for(String seed: seedList)
 		addURL(seed);
 	}
 
